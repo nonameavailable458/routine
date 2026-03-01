@@ -4,17 +4,11 @@ from sqlalchemy.orm import relationship
 
 Base = declarative_base()
 
-class User(Base):
-    __tablename__ = 'users'
-    id = Column(Integer, primary_key=True)
-    username = Column(String, unique=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
-
 class Teacher(Base):
     __tablename__ = 'teachers'
     id = Column(Integer, primary_key=True)
     user_id = Column(String, default="default_user")
-    teacher_id = Column(String, nullable=False)
+    teacher_id = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
     department = Column(String, nullable=False, default="ME")
     seniority = Column(Integer, default=1)
@@ -25,7 +19,7 @@ class Room(Base):
     __tablename__ = 'rooms'
     id = Column(Integer, primary_key=True)
     user_id = Column(String, default="default_user")
-    room_id = Column(String, nullable=False)
+    room_id = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
     capacity = Column(Integer, default=40)
     type = Column(String) # Theory, Lab, etc.
@@ -34,7 +28,7 @@ class Class(Base):
     __tablename__ = 'classes'
     id = Column(Integer, primary_key=True)
     user_id = Column(String, default="default_user")
-    class_id = Column(String, nullable=False)
+    class_id = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
     size = Column(Integer, default=40)
 
@@ -46,7 +40,6 @@ class Subject(Base):
     subject_id = Column(String, nullable=False)
     dept = Column(String)
     name = Column(String, nullable=False)
-    credit = Column(Float, default=3.0)
     duration = Column(Integer, default=1)
     required_room_type = Column(String)
     viable_rooms = Column(String) # Comma-separated list of room IDs
@@ -82,21 +75,21 @@ class SubjectOfAllSemester(Base):
     __tablename__ = 'subjects_of_all_semester'
     id = Column(Integer, primary_key=True)
     user_id = Column(String, default="default_user")
-    subject_id = Column(String, nullable=False)
+    subject_id = Column(String, unique=True, nullable=False)
     credit = Column(Float, default=3.0)
 
 class Setting(Base):
     __tablename__ = 'settings'
     id = Column(Integer, primary_key=True)
     user_id = Column(String, default="default_user")
-    key = Column(String, nullable=False)
+    key = Column(String, unique=True, nullable=False)
     value = Column(String)
 
 class Term(Base):
     __tablename__ = 'terms'
     id = Column(Integer, primary_key=True)
     user_id = Column(String, default="default_user")
-    name = Column(String, nullable=False) # e.g. "1-1", "1-2"
+    name = Column(String, unique=True, nullable=False) # e.g. "1-1", "1-2"
     is_active = Column(Boolean, default=True)
 
 class Schedule(Base):

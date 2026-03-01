@@ -20,16 +20,16 @@ logging.basicConfig(
     filemode='w'
 )
 
-def load_data_from_db(db: Session, user_id: str = "default_user"):
+def load_data_from_db(db: Session):
     """Loads all necessary data from the database into a dictionary of DataFrames."""
     data = {}
     try:
-        data['teachers.csv'] = pd.read_sql(db.query(Teacher).filter(Teacher.user_id == user_id).statement, db.bind)
-        data['rooms.csv'] = pd.read_sql(db.query(Room).filter(Room.user_id == user_id).statement, db.bind)
-        data['classes.csv'] = pd.read_sql(db.query(Class).filter(Class.user_id == user_id).statement, db.bind)
-        data['subjects.csv'] = pd.read_sql(db.query(Subject).filter(Subject.user_id == user_id).statement, db.bind)
-        data['curriculum.csv'] = pd.read_sql(db.query(Curriculum).filter(Curriculum.user_id == user_id).statement, db.bind)
-        data['subjects_of_all_semester.csv'] = pd.read_sql(db.query(SubjectOfAllSemester).filter(SubjectOfAllSemester.user_id == user_id).statement, db.bind)
+        data['teachers.csv'] = pd.read_sql(db.query(Teacher).statement, db.bind)
+        data['rooms.csv'] = pd.read_sql(db.query(Room).statement, db.bind)
+        data['classes.csv'] = pd.read_sql(db.query(Class).statement, db.bind)
+        data['subjects.csv'] = pd.read_sql(db.query(Subject).statement, db.bind)
+        data['curriculum.csv'] = pd.read_sql(db.query(Curriculum).statement, db.bind)
+        data['subjects_of_all_semester.csv'] = pd.read_sql(db.query(SubjectOfAllSemester).statement, db.bind)
         return data, True
     except Exception as e:
         logging.error(f"CRITICAL: Failed to load data from database: {e}")
@@ -91,22 +91,17 @@ def check_teacher_workload(datasets, days_per_week):
     subjects_df = datasets['subjects.csv']
 
     # Add class_prefix to curriculum for merging
-    curriculum_df_copy = curriculum_df.copy()
-    curriculum_df_copy['class_prefix'] = curriculum_df_copy['class_id'].astype(str).str[:2]
-    curriculum_df_copy['subject_id'] = curriculum_df_copy['subject_id'].astype(str)
-
+    curriculum_df['class_prefix'] = curriculum_df['class_id'].astype(str).str[:2]
     subjects_df_copy = subjects_df.copy()
     subjects_df_copy['class_id'] = subjects_df_copy['class_id'].astype(str)
-    subjects_df_copy['subject_id'] = subjects_df_copy['subject_id'].astype(str)
 
     merged_df = pd.merge(
-        curriculum_df_copy,
+        curriculum_df,
         subjects_df_copy,
         left_on=['class_prefix', 'subject_id'],
         right_on=['class_id', 'subject_id'],
         suffixes=('', '_subj')
     )
-
     issues = []
     for _, teacher_info in teachers_df.iterrows():
         teacher_id = teacher_info['teacher_id']
@@ -138,49 +133,31 @@ def check_teacher_workload(datasets, days_per_week):
 def check_course_credits(datasets):
     curriculum_df = datasets['curriculum.csv']
     subjects_df = datasets['subjects.csv']
+    subjects_all_sem_df = datasets['subjects_of_all_semester.csv']
 
-    # Subject data indexed by (class_id, subject_id)
-    subjects_df_copy = subjects_df.copy()
-    subjects_df_copy['class_id'] = subjects_df_copy['class_id'].astype(str)
-    subjects_df_copy['subject_id'] = subjects_df_copy['subject_id'].astype(str)
-    subject_map = subjects_df_copy.set_index(['class_id', 'subject_id']).to_dict('index')
+    # Theory subjects identified by (class_id, subject_id)
+    theory_subjects = subjects_df[subjects_df['required_room_type'].isnull() | (subjects_df['required_room_type'] == '')]
+    theory_subject_keys = set(zip(theory_subjects['class_id'].astype(str), theory_subjects['subject_id']))
 
+    credit_map = subjects_all_sem_df.set_index('subject_id')['credit'].to_dict()
     issues = []
-    # Curriculum is grouped by class_id and subject_id to check total periods assigned
-    curriculum_df_copy = curriculum_df.copy()
-    curriculum_df_copy['class_id'] = curriculum_df_copy['class_id'].astype(str)
-    curriculum_df_copy['subject_id'] = curriculum_df_copy['subject_id'].astype(str)
-
-    grouped = curriculum_df_copy.groupby(['class_id', 'subject_id'])
+    grouped = curriculum_df.groupby(['class_id', 'subject_id'])
     for (class_id, subject_id), group in grouped:
         class_prefix = str(class_id)[:2]
-        subj_key = (class_prefix, subject_id)
-
-        if subj_key in subject_map:
-            subj_info = subject_map[subj_key]
-            # Only validate Theory subjects (required_room_type is empty, null, or 'Theory')
-            room_type = subj_info.get('required_room_type')
-            is_theory = not room_type or pd.isna(room_type) or str(room_type).strip().lower() == 'theory'
-
-            if is_theory:
-                total_periods = group['periods_per_week'].sum()
-                duration = subj_info.get('duration', 1)
-                expected_credit = subj_info.get('credit', 0.0)
-
-                # Formula: periods_per_week * duration == credit
-                if (total_periods * duration) != expected_credit:
-                    msg = f"Credit mismatch for class '{class_id}' and subject '{subject_id}'. " \
-                          f"Assigned: {total_periods} periods * {duration} hrs = {total_periods * duration}, " \
-                          f"Expected Credit: {expected_credit}."
-                    logging.warning(f"Course Credit: {msg}")
-                    issues.append({"type": "warning", "category": "Course Credit", "message": msg})
+        if (class_prefix, subject_id) in theory_subject_keys:
+            total_periods = group['periods_per_week'].sum()
+            expected_credit = credit_map.get(subject_id)
+            if expected_credit is not None and total_periods != expected_credit:
+                msg = f"Mismatch for class '{class_id}' and subject '{subject_id}'. Assigned: {total_periods}, Expected: {expected_credit}."
+                logging.warning(f"Course Credit: {msg}")
+                issues.append({"type": "warning", "category": "Course Credit", "message": msg})
     return issues
 
-def validate_data(user_id: str = "default_user"):
+def validate_data():
     db = SessionLocal()
     all_issues = []
     try:
-        datasets, success = load_data_from_db(db, user_id)
+        datasets, success = load_data_from_db(db)
         if not success:
             msg = "Critical error: Data could not be loaded from database."
             logging.error(msg)
@@ -189,7 +166,7 @@ def validate_data(user_id: str = "default_user"):
         all_issues.extend(check_referential_integrity(datasets))
         all_issues.extend(check_duplicate_ids(datasets))
 
-        settings = {s.key: s.value for s in db.query(Setting).filter(Setting.user_id == user_id).all()}
+        settings = {s.key: s.value for s in db.query(Setting).all()}
         days_per_week = int(settings.get('days_num', 5))
         all_issues.extend(check_teacher_workload(datasets, days_per_week))
 

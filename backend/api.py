@@ -14,44 +14,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from database import SessionLocal, init_db, get_db
 from models import (
-    User, Teacher, Room, Class, Subject, Curriculum,
+    Teacher, Room, Class, Subject, Curriculum,
     TeacherUnavailability, TeacherPreference, SubjectOfAllSemester, Setting, Term,
     Schedule, ScheduleAssignment
 )
-from auth_utils import (
-    verify_password, get_password_hash, create_access_token,
-    create_refresh_token, decode_token
-)
-from fastapi.security import OAuth2PasswordBearer
-from pydantic import BaseModel
 
 app = FastAPI()
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
-
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    payload = decode_token(token)
-    if not payload or payload.get("type") != "access":
-        raise HTTPException(status_code=401, detail="Could not validate credentials")
-    username: str = payload.get("sub")
-    if username is None:
-        raise HTTPException(status_code=401, detail="Could not validate credentials")
-    user = db.query(User).filter(User.username == username).first()
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
-
-class UserAuth(BaseModel):
-    username: str
-    password: str
-
-class Token(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str
-
-class RefreshRequest(BaseModel):
-    refresh_token: str
 
 app.add_middleware(
     CORSMiddleware,
@@ -64,28 +32,25 @@ app.add_middleware(
 # Initialize DB on startup
 init_db()
 
-DEFAULT_SETTINGS = {
-    "days_num": "5",
-    "periods_num": "9",
-    "show_break": "true",
-    "break_period": "6",
-    "theory_allowed_periods": "1,2,3,4,5",
-    "lab_allowed_periods": "1,4,7",
-    "day_labels": "Sa,Su,Mo,Tu,We",
-    "period_labels": "1st,2nd,3rd,4th,5th,6th,7th,8th,9th",
-    "period_times": "8:00-8:50,9:00-9:50,10:00-10:50,11:00-11:50,12:00-12:50,1:00-1:30,2:00-2:50,3:00-3:50,4:00-4:50",
-    "break_time_label": "1:30 - 2:00",
-    "session_name": "January 2025",
-    "sections": "A,B,C",
-    "seniority_levels": "Lecturer,Assistant Professor,Associate Professor,Professor",
-    "departments": "ME,CHEM,CHE,EEE,CSE,CE,IPE,MME,WRE,Math,Physics,Hum"
-}
-
 def ensure_default_settings():
     db = SessionLocal()
     try:
-        for k, v in DEFAULT_SETTINGS.items():
-            exists = db.query(Setting).filter(Setting.key == k, Setting.user_id == "default_user").first()
+        defaults = {
+            "days_num": "5",
+            "periods_num": "9",
+            "break_period": "6",
+            "theory_allowed_periods": "1,2,3,4,5",
+            "lab_allowed_periods": "1,4,7",
+            "day_labels": "Sa,Su,Mo,Tu,We",
+            "period_labels": "1st,2nd,3rd,4th,5th,6th,7th,8th,9th",
+            "period_times": "8:00-8:50,9:00-9:50,10:00-10:50,11:00-11:50,12:00-12:50,1:00-1:30,2:00-2:50,3:00-3:50,4:00-4:50",
+            "break_time_label": "1:30 - 2:00",
+            "sections": "A,B,C",
+            "seniority_levels": "Lecturer,Assistant Professor,Associate Professor,Professor",
+            "departments": "ME,CHEM,CHE,EEE,CSE,CE,IPE,MME,WRE,Math,Physics,Hum"
+        }
+        for k, v in defaults.items():
+            exists = db.query(Setting).filter(Setting.key == k).first()
             if not exists:
                 db.add(Setting(key=k, value=v, user_id="default_user"))
         db.commit()
@@ -93,55 +58,6 @@ def ensure_default_settings():
         db.close()
 
 ensure_default_settings()
-
-@app.post("/register", response_model=Token)
-def register(user_data: UserAuth, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.username == user_data.username).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-
-    hashed_password = get_password_hash(user_data.password)
-    new_user = User(username=user_data.username, hashed_password=hashed_password)
-    db.add(new_user)
-    db.flush()
-
-    # Copy default settings for the new user
-    for k, v in DEFAULT_SETTINGS.items():
-        db.add(Setting(key=k, value=v, user_id=new_user.username))
-
-    db.commit()
-
-    access_token = create_access_token(data={"sub": new_user.username})
-    refresh_token = create_refresh_token(data={"sub": new_user.username})
-    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
-
-@app.post("/login", response_model=Token)
-def login(user_data: UserAuth, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == user_data.username).first()
-    if not user or not verify_password(user_data.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Incorrect username or password")
-
-    access_token = create_access_token(data={"sub": user.username})
-    refresh_token = create_refresh_token(data={"sub": user.username})
-    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
-
-@app.post("/refresh", response_model=Token)
-def refresh(refresh_data: RefreshRequest, db: Session = Depends(get_db)):
-    payload = decode_token(refresh_data.refresh_token)
-    if not payload or payload.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
-
-    username = payload.get("sub")
-    if not username:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
-
-    user = db.query(User).filter(User.username == username).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-
-    access_token = create_access_token(data={"sub": user.username})
-    refresh_token = create_refresh_token(data={"sub": user.username})
-    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
 
 MODEL_MAP = {
     "teachers": Teacher,
@@ -154,8 +70,7 @@ MODEL_MAP = {
     "subjects_of_all_semester": SubjectOfAllSemester,
     "terms": Term,
     "schedules": Schedule,
-    "schedule_assignments": ScheduleAssignment,
-    "settings": Setting
+    "schedule_assignments": ScheduleAssignment
 }
 
 def to_dict(obj):
@@ -176,39 +91,39 @@ def clean_data(item, model):
     }
 
 @app.get("/overview")
-def get_overview(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_overview(db: Session = Depends(get_db)):
     return {
-        "teachers": db.query(Teacher).filter(Teacher.user_id == current_user.username).count(),
-        "classes": db.query(Class).filter(Class.user_id == current_user.username).count(),
-        "rooms": db.query(Room).filter(Room.user_id == current_user.username).count(),
-        "load": db.query(Curriculum).filter(Curriculum.user_id == current_user.username).count(),
+        "teachers": db.query(Teacher).count(),
+        "classes": db.query(Class).count(),
+        "rooms": db.query(Room).count(),
+        "load": db.query(Curriculum).count(),
     }
 
 @app.get("/data/{table_name}")
-def get_data(table_name: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_data(table_name: str, db: Session = Depends(get_db)):
     if table_name not in MODEL_MAP:
         raise HTTPException(status_code=403, detail="Access denied")
     model = MODEL_MAP[table_name]
-    items = db.query(model).filter(model.user_id == current_user.username).all()
+    items = db.query(model).all()
     return [to_dict(item) for item in items]
 
 @app.post("/data/{table_name}")
-def update_data(table_name: str, data: List[Dict[Any, Any]], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def update_data(table_name: str, data: List[Dict[Any, Any]], db: Session = Depends(get_db)):
     if table_name not in MODEL_MAP:
         raise HTTPException(status_code=403, detail="Access denied")
     model = MODEL_MAP[table_name]
 
     try:
-        # Simple strategy: clear and replace for the current user
-        db.query(model).filter(model.user_id == current_user.username).delete()
+        # Simple strategy: clear and replace
+        db.query(model).delete()
 
-        # If terms are updated, also clear curriculum for the current user
+        # If terms are updated, also clear curriculum
         if table_name == "terms":
-            db.query(Curriculum).filter(Curriculum.user_id == current_user.username).delete()
+            db.query(Curriculum).delete()
 
         for item in data:
             valid_data = clean_data(item, model)
-            db.add(model(**valid_data, user_id=current_user.username))
+            db.add(model(**valid_data, user_id="default_user"))
         db.commit()
     except IntegrityError as e:
         db.rollback()
@@ -219,11 +134,11 @@ def update_data(table_name: str, data: List[Dict[Any, Any]], db: Session = Depen
     return {"status": "success"}
 
 @app.get("/export/{table_name}")
-def export_data(table_name: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def export_data(table_name: str, db: Session = Depends(get_db)):
     if table_name not in MODEL_MAP:
         raise HTTPException(status_code=403, detail="Access denied")
     model = MODEL_MAP[table_name]
-    items = db.query(model).filter(model.user_id == current_user.username).all()
+    items = db.query(model).all()
 
     output = io.StringIO()
     if not items:
@@ -245,7 +160,7 @@ def export_data(table_name: str, db: Session = Depends(get_db), current_user: Us
     )
 
 @app.post("/import/{table_name}")
-async def import_data(table_name: str, file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def import_data(table_name: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
     if table_name not in MODEL_MAP:
         raise HTTPException(status_code=403, detail="Access denied")
     model = MODEL_MAP[table_name]
@@ -254,17 +169,17 @@ async def import_data(table_name: str, file: UploadFile = File(...), db: Session
     df = pd.read_csv(io.BytesIO(content))
 
     try:
-        # Clear and replace for the current user
+        # Clear and replace
         if table_name == "schedules":
             # When schedules are replaced, we must also clear assignments due to FK
-            db.query(ScheduleAssignment).filter(ScheduleAssignment.user_id == current_user.username).delete()
-            db.query(Schedule).filter(Schedule.user_id == current_user.username).delete()
+            db.query(ScheduleAssignment).delete()
+            db.query(Schedule).delete()
         else:
-            db.query(model).filter(model.user_id == current_user.username).delete()
+            db.query(model).delete()
 
-        # If curriculum is imported, filter by active terms for the current user
+        # If curriculum is imported, filter by active terms
         if table_name == "curriculum":
-            active_terms = db.query(Term).filter(Term.is_active == True, Term.user_id == current_user.username).all()
+            active_terms = db.query(Term).filter(Term.is_active == True).all()
             active_codes = [t.name.replace('-', '') for t in active_terms]
 
             def is_active(row):
@@ -276,7 +191,7 @@ async def import_data(table_name: str, file: UploadFile = File(...), db: Session
 
         for _, row in df.iterrows():
             valid_data = clean_data(row.to_dict(), model)
-            db.add(model(**valid_data, user_id=current_user.username))
+            db.add(model(**valid_data, user_id="default_user"))
         db.commit()
     except IntegrityError as e:
         db.rollback()
@@ -291,30 +206,30 @@ async def import_data(table_name: str, file: UploadFile = File(...), db: Session
     return {"status": "success"}
 
 @app.get("/settings")
-def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    settings = db.query(Setting).filter(Setting.user_id == current_user.username).all()
+def get_settings(db: Session = Depends(get_db)):
+    settings = db.query(Setting).all()
     return {s.key: s.value for s in settings if s.key != 'footer_right_text'}
 
 @app.post("/settings")
-def update_settings(data: Dict[str, str], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def update_settings(data: Dict[str, str], db: Session = Depends(get_db)):
     for k, v in data.items():
-        setting = db.query(Setting).filter(Setting.key == k, Setting.user_id == current_user.username).first()
+        setting = db.query(Setting).filter(Setting.key == k).first()
         if setting:
             setting.value = v
         else:
-            db.add(Setting(key=k, value=v, user_id=current_user.username))
+            db.add(Setting(key=k, value=v, user_id="default_user"))
     db.commit()
     return {"status": "success"}
 
 @app.get("/validate")
-def validate_data(current_user: User = Depends(get_current_user)):
-    issues = data_validator.validate_data(user_id=current_user.username)
+def validate_data():
+    issues = data_validator.validate_data()
     return issues
 
 @app.post("/run-scheduler")
-def run_scheduler(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    data_validator.validate_data(user_id=current_user.username)
-    res = main.run(user_id=current_user.username)
+def run_scheduler(db: Session = Depends(get_db)):
+    data_validator.validate_data()
+    res = main.run()
 
     if res.get('success') and res.get('data'):
         data = res['data']
@@ -323,7 +238,6 @@ def run_scheduler(db: Session = Depends(get_db), current_user: User = Depends(ge
         schedule_name = data['settings_snapshot'].get('session_name', f"Schedule {now}")
 
         new_schedule = Schedule(
-            user_id=current_user.username,
             name=schedule_name,
             created_at=now,
             settings_snapshot=json.dumps(data['settings_snapshot'])
@@ -334,7 +248,6 @@ def run_scheduler(db: Session = Depends(get_db), current_user: User = Depends(ge
         # Create assignments
         for assign in data['assignments']:
             db.add(ScheduleAssignment(
-                user_id=current_user.username,
                 schedule_id=new_schedule.id,
                 session_id=assign['session_id'],
                 class_id=assign['class_id'],
@@ -352,7 +265,8 @@ def run_scheduler(db: Session = Depends(get_db), current_user: User = Depends(ge
         new_schedule.settings_snapshot = json.dumps(full_snapshot)
 
         # Prune old schedules - keep only top 5 per user
-        old_schedules = db.query(Schedule).filter(Schedule.user_id == current_user.username).order_by(Schedule.id.desc()).offset(5).all()
+        user_id = "default_user"
+        old_schedules = db.query(Schedule).filter(Schedule.user_id == user_id).order_by(Schedule.id.desc()).offset(5).all()
         for old in old_schedules:
             db.delete(old)
 
@@ -364,8 +278,8 @@ def run_scheduler(db: Session = Depends(get_db), current_user: User = Depends(ge
     }
 
 @app.delete("/schedules/{schedule_id}")
-def delete_schedule(schedule_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    schedule = db.query(Schedule).filter(Schedule.id == schedule_id, Schedule.user_id == current_user.username).first()
+def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
+    schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
     db.delete(schedule)
@@ -373,11 +287,12 @@ def delete_schedule(schedule_id: int, db: Session = Depends(get_db), current_use
     return {"status": "success"}
 
 @app.delete("/schedules")
-def delete_all_schedules(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def delete_all_schedules(db: Session = Depends(get_db)):
+    user_id = "default_user"
     try:
         # Explicitly delete assignments first, then schedules to handle any potential FK issues
-        db.query(ScheduleAssignment).filter(ScheduleAssignment.user_id == current_user.username).delete()
-        db.query(Schedule).filter(Schedule.user_id == current_user.username).delete()
+        db.query(ScheduleAssignment).filter(ScheduleAssignment.user_id == user_id).delete()
+        db.query(Schedule).filter(Schedule.user_id == user_id).delete()
         db.commit()
     except Exception as e:
         db.rollback()
@@ -385,8 +300,8 @@ def delete_all_schedules(db: Session = Depends(get_db), current_user: User = Dep
     return {"status": "success"}
 
 @app.get("/schedules")
-def list_schedules(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    schedules = db.query(Schedule).filter(Schedule.user_id == current_user.username).order_by(Schedule.id.desc()).all()
+def list_schedules(db: Session = Depends(get_db)):
+    schedules = db.query(Schedule).order_by(Schedule.id.desc()).all()
     return [{
         "id": s.id,
         "name": s.name,
@@ -394,12 +309,12 @@ def list_schedules(db: Session = Depends(get_db), current_user: User = Depends(g
     } for s in schedules]
 
 @app.get("/schedules/{schedule_id}")
-def get_schedule(schedule_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    schedule = db.query(Schedule).filter(Schedule.id == schedule_id, Schedule.user_id == current_user.username).first()
+def get_schedule(schedule_id: int, db: Session = Depends(get_db)):
+    schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    assignments = db.query(ScheduleAssignment).filter(ScheduleAssignment.schedule_id == schedule_id, ScheduleAssignment.user_id == current_user.username).all()
+    assignments = db.query(ScheduleAssignment).filter(ScheduleAssignment.schedule_id == schedule_id).all()
     settings = json.loads(schedule.settings_snapshot)
 
     # We need to return a list of options (classes/teachers) for the frontend to choose from
@@ -421,15 +336,10 @@ def format_class_name(class_id: str) -> str:
     return f"ME {class_id}"
 
 @app.get("/schedules/{schedule_id}/view")
-def view_schedule(schedule_id: int, type: str, id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    schedule = db.query(Schedule).filter(Schedule.id == schedule_id, Schedule.user_id == current_user.username).first()
+def view_schedule(schedule_id: int, type: str, id: str, db: Session = Depends(get_db)):
+    schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
-
-    # Get current session name from settings instead of snapshot
-    curr_settings = db.query(Setting).filter(Setting.user_id == current_user.username).all()
-    settings_dict = {s.key: s.value for s in curr_settings}
-    header_title = settings_dict.get('session_name', schedule.name)
 
     settings = json.loads(schedule.settings_snapshot)
     home_room_map = settings.get('home_room_map', {})
@@ -437,29 +347,19 @@ def view_schedule(schedule_id: int, type: str, id: str, db: Session = Depends(ge
     if type == 'class':
         assignments = db.query(ScheduleAssignment).filter(
             ScheduleAssignment.schedule_id == schedule_id,
-            ScheduleAssignment.class_id == id,
-            ScheduleAssignment.user_id == current_user.username
+            ScheduleAssignment.class_id == id
         ).all()
-        class_info = db.query(Class).filter(Class.class_id == id, Class.user_id == current_user.username).first()
-
-        # Fallback to L-T format if class name is missing
-        if class_info and class_info.name:
-            title = class_info.name
-        else:
-            if len(id) >= 2 and id[0].isdigit() and id[1].isdigit():
-                title = f"{id[0]}-{id[1]}"
-            else:
-                title = id
-
+        class_info = db.query(Class).filter(Class.class_id == id).first()
+        class_name = class_info.name if class_info else id
+        title = format_class_name(id)
         hr_id = home_room_map.get(id, "")
         hr_display = f"R#{hr_id}" if hr_id else ""
     elif type == 'teacher':
         assignments = db.query(ScheduleAssignment).filter(
             ScheduleAssignment.schedule_id == schedule_id,
-            ScheduleAssignment.teacher_id == id,
-            ScheduleAssignment.user_id == current_user.username
+            ScheduleAssignment.teacher_id == id
         ).all()
-        teacher_info = db.query(Teacher).filter(Teacher.teacher_id == id, Teacher.user_id == current_user.username).first()
+        teacher_info = db.query(Teacher).filter(Teacher.teacher_id == id).first()
         title = f"{teacher_info.name if teacher_info else id} ({id})"
         hr_display = ""
     else:
@@ -468,7 +368,6 @@ def view_schedule(schedule_id: int, type: str, id: str, db: Session = Depends(ge
     # Build the grid (reusing logic from main.py's former create_output_tables)
     periods_num = int(settings.get('periods_num', 9))
     days_num = int(settings.get('days_num', 5))
-    show_break = settings.get('show_break', 'true') == 'true'
     break_period = int(settings.get('break_period', 6))
 
     period_labels = settings.get('period_labels', "").split(',')
@@ -476,7 +375,7 @@ def view_schedule(schedule_id: int, type: str, id: str, db: Session = Depends(ge
     day_labels = settings.get('day_labels', "").split(',')
 
     # Prepare subjects data for duration
-    subjects_db = db.query(Subject).filter(Subject.user_id == current_user.username).all()
+    subjects_db = db.query(Subject).all()
     subject_durations = {(s.class_id[:2] if s.class_id else "", s.subject_id): s.duration for s in subjects_db}
     # Fallback for subjects without class prefix match
     subject_durations_fallback = {s.subject_id: s.duration for s in subjects_db}
@@ -495,7 +394,7 @@ def view_schedule(schedule_id: int, type: str, id: str, db: Session = Depends(ge
             "classes": [],
             "content": []
         })
-        if show_break and p == break_period:
+        if p == break_period:
             header.append({
                 "text": f"Break {settings.get('break_time_label', '')}",
                 "is_header": True,
@@ -555,7 +454,7 @@ def view_schedule(schedule_id: int, type: str, id: str, db: Session = Depends(ge
                     })
                     covered_periods.add(p)
 
-            if show_break and p == break_period:
+            if p == break_period:
                 row.append({
                     "text": "",
                     "is_header": False,
@@ -568,7 +467,7 @@ def view_schedule(schedule_id: int, type: str, id: str, db: Session = Depends(ge
 
     return {
         "metadata": {
-            "header_title": header_title,
+            "header_title": f"Routine Hub - {schedule.name}",
             "class_title": title,
             "home_room": hr_display,
             "footer_left": f"Generated: {schedule.created_at}",

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getData, updateData, getSettings } from '../api';
+import { getData, updateData } from '../api';
 import { Check } from 'lucide-react';
 import { cn } from '../utils';
 
@@ -23,48 +23,15 @@ function DataStudio() {
   const [classes, setClasses] = useState([]);
   const [teachers, setTeachers] = useState([]);
   const [curriculum, setCurriculum] = useState([]);
-  const [departments, setDepartments] = useState([]);
   const [selectedCourse, setSelectedCourse] = useState(null);
 
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState(null);
 
-  const loadData = React.useCallback(async () => {
-    try {
-      if (activeTab === 'terms') {
-        const res = await getData('terms');
-        const active = res.data.filter(t => t.is_active).map(t => t.name);
-        setActiveTerms(active);
-        setSavedActiveTerms(active);
-      } else if (activeTab === 'allotment') {
-        const [subjRes, teachRes, clsRes, currRes, settingsRes] = await Promise.all([
-          getData('subjects'),
-          getData('teachers'),
-          getData('classes'),
-          getData('curriculum'),
-          getSettings()
-        ]);
-        setSubjects(subjRes.data);
-        setTeachers(teachRes.data);
-        setClasses(clsRes.data);
-        setCurriculum(currRes.data);
-
-        if (settingsRes.data && settingsRes.data.departments) {
-          setDepartments(settingsRes.data.departments.split(',').map(s => s.trim()));
-        }
-
-        if (!selectedCourse && subjRes.data.length > 0) {
-          setSelectedCourse(subjRes.data[0]);
-        }
-      }
-    } catch (err) {
-      console.error("Failed to load data", err);
-    }
-  }, [activeTab, selectedCourse]);
-
   useEffect(() => {
     loadData();
-  }, [activeTab, loadData]);
+  }, [activeTab]);
 
   useEffect(() => {
     const fetchSavedTerms = async () => {
@@ -79,6 +46,36 @@ function DataStudio() {
     };
     fetchSavedTerms();
   }, []);
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      if (activeTab === 'terms') {
+        const res = await getData('terms');
+        const active = res.data.filter(t => t.is_active).map(t => t.name);
+        setActiveTerms(active);
+        setSavedActiveTerms(active);
+      } else if (activeTab === 'allotment') {
+        const [subjRes, teachRes, clsRes, currRes] = await Promise.all([
+          getData('subjects'),
+          getData('teachers'),
+          getData('classes'),
+          getData('curriculum')
+        ]);
+        setSubjects(subjRes.data);
+        setTeachers(teachRes.data);
+        setClasses(clsRes.data);
+        setCurriculum(currRes.data);
+        if (!selectedCourse && subjRes.data.length > 0) {
+          setSelectedCourse(subjRes.data[0]);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load data", err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const showToast = (msg) => {
     setToast(msg);
@@ -137,7 +134,6 @@ function DataStudio() {
             selectedCourse={selectedCourse}
             setSelectedCourse={setSelectedCourse}
             teachers={teachers}
-            departments={departments}
             classes={classes}
             curriculum={curriculum}
             onSave={() => {
